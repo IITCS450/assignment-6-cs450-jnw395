@@ -15,6 +15,8 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#define MAXPATH           128  // max file path length
+#define MAX_SYMLINK_DEPTH  10  // max symlink chain depth
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -314,6 +316,44 @@ sys_open(void)
     }
   }
 
+  // Symlink step 8 modifications
+  {
+    int depth = 0;
+    char target[MAXPATH];   // buffer
+
+    while(ip->type == T_SYMLINK){
+      // enforce cycle / chain-length limit
+      if(depth >= MAX_SYMLINK_DEPTH){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      depth++;
+
+      // read target path, gives C string 
+      int n = readi(ip, target, 0, MAXPATH-1);
+      if(n <= 0){
+        // inode has no data/corrupted
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      target[n] = '\0'; // guaranteed termination
+
+      iunlockput(ip);
+
+      // resolve target path with namei
+      ip = namei(target);
+      if(ip == 0){  // no target
+        end_op();
+        return -1;
+      }
+
+      // lock before iteration
+      ilock(ip);
+    }
+  }
+
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
@@ -440,5 +480,40 @@ sys_pipe(void)
   }
   fd[0] = fd0;
   fd[1] = fd1;
+  return 0;
+}
+
+int
+sys_symlink(void)
+{
+  char *target, *linkpath;
+  struct inode *ip;
+  int len;
+
+  if(argstr(0, &target) < 0 || argstr(1, &linkpath) < 0)
+    return -1;
+
+  begin_op();         // start transaction
+
+  // allocate new inode of T_symlink and link to directory
+  ip = create(linkpath, T_SYMLINK, 0, 0);
+  if (ip == 0){
+    end_op();
+    return -1;
+  }
+
+  // write target path into inode; start at offset=0
+  len = strlen(target);
+  if(writei(ip, target, 0, len + 1) != len +1){   // write inode(type, nlink, size)
+    // failed to write -> release inode
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  // release lock and commit log
+  iunlockput(ip);
+  end_op();           // end transaction
+
   return 0;
 }

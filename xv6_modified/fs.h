@@ -21,6 +21,9 @@ struct superblock {
   uint bmapstart;    // Block number of first free map block
 };
 
+// Inode type
+#define T_SYMLINK 4   // Symbolic link inode type
+
 #define NDIRECT 12
 #define NINDIRECT (BSIZE / sizeof(uint))
 #define MAXFILE (NDIRECT + NINDIRECT)
